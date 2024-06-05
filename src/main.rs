@@ -1,82 +1,194 @@
-use csv::ReaderBuilder;
-use ndarray::{Array2, s};
+use csv::{ReaderBuilder, StringRecord};
+use ndarray::{Array2, Array1, Axis, s};
 use std::error::Error;
 use linfa::dataset::Dataset;
-use linfa::traits::Transformer;
-use linfa::prelude::LinearRegression;
+use linfa::prelude::Fit;
+use linfa_linear::LinearRegression;
 
-
-
-fn leer_archivo(path: &str) -> Result<Vec<Vec<f64>>, Box<dyn Error>> {
-    let mut reader = ReaderBuilder::new().delimiter(b';').from_path(path)?;
-    let mut rs: Vec<Vec<f64>> = Vec::new();
-
-    for result in reader.records() {
-        let record = result?;
-        for field in &record {
-            let v: Vec<&str> = field.split(',').collect();
-            let mut demo: Vec<f64> = Vec::new();
-            for vs in v {
-                let converted_value = match vs {
-                    "yes" => 1.0,
-                    "no" => 0.0,
-                    "furnished" => 0.0,
-                    "semi-furnished" => 1.0,
-                    "unfurnished" => 2.0,
-                    _ => vs.parse::<f64>().unwrap_or(0.0),  // Default to 0.0 if parsing fails
-                };
-                demo.push(converted_value);
-            }
-            rs.push(demo);
-        }
-    }
-    Ok(rs)
+fn contains_number(s: &&str) -> bool {
+    s.chars().any(|c| c.is_digit(10))
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let data = leer_archivo("Housing.csv")?;
 
-    // Determine the number of rows and columns
+fn read_data_file(path: &str) -> Result<(Vec<Vec<f64>>, Vec<String>), Box<dyn Error>> {
+    let mut reader = csv::ReaderBuilder::new().delimiter(b';').from_path(path)?;
+    let mut reader_temp = csv::ReaderBuilder::new().delimiter(b';').from_path(path)?;
+
+    let mut rs: Vec<Vec<f64>> = Vec::new();
+    let mut indexs: Vec<usize> = Vec::new();
+    let mut dumy: Vec<Vec<String>> = Vec::new();
+
+    // Process the header to extract feature names
+    let headers = reader.headers()?.clone();
+    let feature_names: Vec<String> = headers.iter().map(|s| s.split(',').
+    collect::<Vec<&str>>()).flatten().map(|s| s.to_string()).collect();
+
+    // Process the header to find categorical indices and collect unique values
+    if let Some(result) = reader.records().next() {
+        let record = result?;
+        for (_index, field) in record.iter().enumerate() {
+            let v: Vec<&str> = field.split(',').collect();
+            for (i, f) in v.iter().enumerate() {
+                if !contains_number(f) {
+                    indexs.push(i);
+                }
+            }
+        }
+
+        for _ in indexs.iter() {
+            let temp: Vec<String> = Vec::new();
+            dumy.push(temp);
+        }
+
+        // Collect unique values for categorical fields
+        for result in reader.records() {
+            let record_1 = result?;
+            for (_field_index, field) in record_1.iter().enumerate() {
+                let v: Vec<&str> = field.split(',').collect();
+                for (j, &index) in indexs.iter().enumerate() {
+                    if !dumy[j].contains(&v.get(index).unwrap_or(&"").to_string()) {
+                        dumy[j].push(v.get(index).unwrap_or(&"").to_string());
+                    }
+                }
+            }
+        }
+        for j in &mut dumy {
+            j.sort();
+        }
+            
+    }
+    for result in reader_temp.records() {
+        let record = result?;
+        let mut row: Vec<f64> = Vec::new();
+        
+        for field in &record {
+            let v: Vec<&str> = field.split(',').collect();
+            
+            for vs in v {
+                let mut found_index = None;
+                // Check for categorical values
+                for (id, id_e) in dumy.iter().enumerate() {
+                    for (idx, el) in id_e.iter().enumerate() {
+                        if vs == el.as_str() {
+                            found_index = Some(idx as f64);
+                            break;
+                        }
+                    }
+                    if found_index.is_some() {
+                        break;
+                    }
+                }
+                if let Some(idx) = found_index {
+                    row.push(idx);
+                } else {
+                    if let Ok(num_value) = vs.parse::<f64>() {
+                        row.push(num_value);
+                    } else {
+                        row.push(0.0);
+                    }
+                }
+            }
+        }
+        rs.push(row);
+    }
+    
+    Ok((rs, feature_names))
+}
+
+
+fn predict(data: Vec<Vec<f64>>) -> Result<(Array1<f64>, Array2<f64>), Box<dyn Error>> {
+    // Convert data to Array2
     let rows = data.len();
     let cols = data.get(0).map_or(0, |row| row.len());
-
-    // Flatten the vector of vectors into a single vector
     let flattened_data: Vec<f64> = data.into_iter().flatten().collect();
 
-    // Create the Array2
     let array = Array2::from_shape_vec((rows, cols), flattened_data)?;
 
-    // Print the Array2
-    // println!("{:?}", array);
-    
     let (data, targets) = (
         array.slice(s![.., 1..]).to_owned(),
         array.column(0).to_owned(),
     );
-    // println!("{:?}",targets);
-    // println!("{:?}",data);
-    
-    let x_max = data.iter().cloned().fold(f64::MIN, f64::max).ceil();
-    let y_max = targets.iter().cloned().fold(f64::MIN, f64::max).ceil();
 
-    // println!("x_max: {:?}", x_max);
-    // println!("y_max: {:?}", y_max);
+    // Create Dataset
+    let dataset = Dataset::new(data.clone(), targets.clone())
+        .with_feature_names(vec![
+            "area", "bedrooms", "bathrooms", "stories", "mainroad", "guestroom", "basement",
+            "hotwaterheating", "airconditioning", "parking", "prefarea", "furnishingstatus"
+        ]);
 
-    let dataset = Dataset::new(data, targets).
-    with_feature_names(vec!["area", "bedrooms","bathrooms","stories","mainroad","guestroom","basement",
-                            "hotwaterheating","airconditioning","parking","prefarea","furnishingstatus"]);
+    // Fit Linear Regression Model
+    let lin_reg = LinearRegression::new();
+    let model = lin_reg.fit(&dataset)?;
 
-    // Split dataset into features (X) and target (y)
-    let X = dataset.records();
-    let y = dataset.targets().into_owned();
+    // Making predictions
+    let mut new_models: Vec<f64> = Vec::new();
+    for row in data.axis_iter(Axis(0)) {
+        let mut forecast = model.intercept();
+        for (i, &value) in row.iter().enumerate() {
+            forecast += model.params()[i] * value;
+        }
+        new_models.push(forecast);
+    }
+    let predictions = Array2::from_shape_vec((new_models.len(), 1), new_models)?;
 
-    // Split into training and testing sets (e.g., 80% train, 20% test)
-    let split_point = (X.nrows() as f64 * 0.8) as usize;
-    let (X_train, X_test) = X.select(ndarray::s![0..split_point, split_point..]);
-    let (y_train, y_test) = (y.select(Axis(0), &0..split_point), y.select(Axis(0), &split_point..));
-    
 
-
-
-    Ok(())
+    Ok((targets, predictions))
 }
+
+
+fn print_targets_and_predictions(targets: &Array1<f64>, predictions: &Array2<f64>) {
+    assert_eq!(targets.len(), predictions.len(), "Targets and predictions must have the same length.");
+
+    for (target, prediction) in targets.iter().zip(predictions.outer_iter()) {
+        println!("Target: {:.2}, Prediction: {:.2}", target, prediction[0]);
+    }
+}
+
+
+fn _r_squared(y_true: &Array1<f64>, y_pred: &Array2<f64>) -> Vec<f64> {
+    let mean_y_true = y_true.mean().unwrap();
+    let ss_tot = y_true.iter().map(|a| (a - mean_y_true).powi(2)).sum::<f64>();
+    // let mut r_squared_values = Array1::zeros(y_pred.ncols());
+    let mut r_squared_values = Vec::new();
+    for (col_idx, col) in y_pred.outer_iter().enumerate() {
+        let ss_res = y_true.iter().zip(col.iter()).map(|(a, b)| (a - b).powi(2)).sum::<f64>();
+        let r_2 = 1.0 - (ss_res / ss_tot);
+        r_squared_values.push(r_2);
+
+    }
+
+    r_squared_values
+}
+
+
+fn print_r_squared(feature_names: &Vec<String>, r_squared_values: &Vec<f64>) {
+    println!("R-squared for each variable:");
+    for (name, r_2) in feature_names.iter().zip(r_squared_values.iter()) {
+        println!("{}: {:.2}%", name, r_2 * 100.0);
+    }
+}
+
+
+fn main() {
+    if let Ok((data, feature_names)) = read_data_file("Housing.csv") {
+        match predict(data) {
+            Ok((targets, predictions)) => {
+                print_targets_and_predictions(&targets, &predictions);
+                let r_squared_values = _r_squared(&targets, &predictions);
+                print_r_squared(
+                    &feature_names,
+                    &r_squared_values,
+                );
+            }
+            Err(err) => eprintln!("Error predicting: {}", err),
+        }
+    } else {
+        eprintln!("Error reading file");
+    }
+
+    
+}
+
+
+
+
