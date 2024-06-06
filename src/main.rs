@@ -1,27 +1,18 @@
-use ckb_std::error::SysError;
-use ckb_std::high_level::debug;
-use ckb_std::syscalls::load_script;
-use ckb_std::ckb_types::prelude::*;
-use ckb_std::ckb_types::{packed::*, bytes::Bytes};
-use ckb_std::ckb_constants::Source;
-use ckb_std::ckb_types::prelude::Unpack;
-
-use csv::{ReaderBuilder, StringRecord};
+// use csv::{ReaderBuilder, StringRecord};
 use ndarray::{Array2, Array1, Axis, s};
+use std::error::Error;
 use linfa::dataset::Dataset;
 use linfa::prelude::Fit;
 use linfa_linear::LinearRegression;
-use std::vec::Vec;
-use std::string::String;
-use std::str;
 
 fn contains_number(s: &&str) -> bool {
     s.chars().any(|c| c.is_digit(10))
 }
 
-fn read_data_file(path: &str) -> Result<(Vec<Vec<f64>>, Vec<String>), Box<dyn std::error::Error>> {
-    let mut reader = ReaderBuilder::new().delimiter(b';').from_path(path)?;
-    let mut reader_temp = ReaderBuilder::new().delimiter(b';').from_path(path)?;
+
+fn read_data_file(path: &str) -> Result<(Vec<Vec<f64>>, Vec<String>), Box<dyn Error>> {
+    let mut reader = csv::ReaderBuilder::new().delimiter(b';').from_path(path)?;
+    let mut reader_temp = csv::ReaderBuilder::new().delimiter(b';').from_path(path)?;
 
     let mut rs: Vec<Vec<f64>> = Vec::new();
     let mut indexs: Vec<usize> = Vec::new();
@@ -104,7 +95,8 @@ fn read_data_file(path: &str) -> Result<(Vec<Vec<f64>>, Vec<String>), Box<dyn st
     Ok((rs, feature_names))
 }
 
-fn predict(data: Vec<Vec<f64>>) -> Result<(Array1<f64>, Array2<f64>), Box<dyn std::error::Error>> {
+
+fn predict(data: Vec<Vec<f64>>) -> Result<(Array1<f64>, Array2<f64>), Box<dyn Error>> {
     // Convert data to Array2
     let rows = data.len();
     let cols = data.get(0).map_or(0, |row| row.len());
@@ -136,48 +128,64 @@ fn predict(data: Vec<Vec<f64>>) -> Result<(Array1<f64>, Array2<f64>), Box<dyn st
     }
     let predictions = Array2::from_shape_vec((new_models.len(), 1), new_models)?;
 
+
     Ok((targets, predictions))
 }
 
-// fn print_targets_and_predictions(targets: &Array1<f64>, predictions: &Array2<f64>) {
-//     assert_eq!(targets.len(), predictions.len(), "Targets and predictions must have the same length.");
-//     for (target, prediction) in targets.iter().zip(predictions.outer_iter()) {
-//         debug!("Target: {:.2}, Prediction: {:.2}", target, prediction[0]);
-//     }
-// }
 
+fn print_targets_and_predictions(targets: &Array1<f64>, predictions: &Array2<f64>) {
+    assert_eq!(targets.len(), predictions.len(), "Targets and predictions must have the same length.");
 
-// fn print_r_squared(feature_names: &Vec<String>, r_squared_values: &Vec<f64>) {
-//     debug!("R-squared for each variable:");
-//     for (name, r_2) in feature_names.iter().zip(r_squared_values.iter()) {
-//         debug!("{}: {:.2}%", name, r_2 * 100.0);
-//     }
-// }
-
-fn _r_squared(y_true: &Array1<f64>, y_pred: &Array2<f64>) -> Vec<f64> {
-    let mean_y_true = y_true.mean().unwrap();
-    let ss_tot = y_true.iter().map(|a| (a - mean_y_true).powi(2)).sum::<f64>();
-    // let mut r_squared_values = Array1::zeros(y_pred.ncols());
-    let mut r_squared_values = Vec::new();
-    for (_col_idx, col) in y_pred.outer_iter().enumerate() {
-        let ss_res = y_true.iter().zip(col.iter()).map(|(a, b)| (a - b).powi(2)).sum::<f64>();
-        let r_2 = 1.0 - (ss_res / ss_tot);
-        r_squared_values.push(r_2);
-
+    for (target, prediction) in targets.iter().zip(predictions.outer_iter()) {
+        println!("Target: {:.2}, Prediction: {:.2}", target, prediction[0]);
     }
-
-    r_squared_values
 }
+
+
+fn _r_squared(y_true: &Array1<f64>, y_pred: &Array2<f64>) -> f64 {
+    // Calculate the mean of y_true
+    let mean_y_true = y_true.mean().unwrap();
+    
+    // Calculate the total sum of squares (SS_tot)
+    let ss_tot = y_true.iter().map(|_a| (_a - mean_y_true).powi(2)).sum::<f64>();
+    
+    // Flatten the y_pred array to treat all predictions as a single array
+    let flattened_y_pred: Vec<f64> = y_pred.iter().cloned().collect();
+    
+    // Calculate the residual sum of squares (SS_res) for the entire set of predictions
+    let ss_res = y_true.iter().zip(flattened_y_pred.iter()).map(|(a, b)| (mean_y_true - b).powi(2)).sum::<f64>();
+    
+    // Calculate R^2 for the entire dataset
+    let r_squared = ss_res / ss_tot;
+    
+    r_squared
+}
+
+
+fn print_r_squared(_feature_names: &Vec<String>, r_squared_values: f64) {
+    println!("R-squared: {}",r_squared_values * 100.0);
+    // for (name, r_2) in feature_names.iter().zip(r_squared_values.iter()) {
+    //     println!("{}: {:.2}%", name, r_2 * 100.0);
+    // }
+}
+
+
 fn main() {
     if let Ok((data, feature_names)) = read_data_file("Housing.csv") {
         match predict(data) {
             Ok((targets, predictions)) => {
-                println!("OK!");
+                print_targets_and_predictions(&targets, &predictions);
+                let r_squared_values = _r_squared(&targets, &predictions);
+                print_r_squared(
+                    &feature_names,
+                    r_squared_values,
+                );
             }
-            Err(err) => debug!("Error predicting: {}", err),
+            Err(err) => eprintln!("Error predicting: {}", err),
         }
     } else {
-        debug!("Error reading file");
+        eprintln!("Error reading file");
     }
-}
 
+    
+}
