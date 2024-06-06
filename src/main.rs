@@ -153,7 +153,7 @@ fn _r_squared(y_true: &Array1<f64>, y_pred: &Array2<f64>) -> f64 {
     let flattened_y_pred: Vec<f64> = y_pred.iter().cloned().collect();
     
     // Calculate the residual sum of squares (SS_res) for the entire set of predictions
-    let ss_res = y_true.iter().zip(flattened_y_pred.iter()).map(|(a, b)| (mean_y_true - b).powi(2)).sum::<f64>();
+    let ss_res = y_true.iter().zip(flattened_y_pred.iter()).map(|(_a, b)| (mean_y_true - b).powi(2)).sum::<f64>();
     
     // Calculate R^2 for the entire dataset
     let r_squared = ss_res / ss_tot;
@@ -189,3 +189,7 @@ fn main() {
 
     
 }
+
+
+
+
